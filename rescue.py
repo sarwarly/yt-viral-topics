@@ -14,27 +14,21 @@ YOUTUBE_CHANNEL_URL = "https://www.googleapis.com/youtube/v3/channels"
 MAX_RESULTS = 5
 MAX_SUBSCRIBERS = 3000
 
-KEYWORDS = list(dict.fromkeys([
-    "wildlife",
-    "AnimalRescue",
-    "SaveAnimals",
-    "RescueAnimals",
-    "DogRescue",
-    "FarmAnimalRescue",
-    "wildlife rescues",
-    "animal rescues",
-    "rescue channel",
-    "rescues channel",
-    "animal rescue",
-    "cat rescues",
-    "Wildlife Animal Rescue",
-    "Wildlife animal rescue"
-]))
-
 # =========================
 # STREAMLIT UI
 # =========================
 st.title("🐾 YouTube Viral Topics – Animal Rescue")
+
+st.subheader("🔑 Keywords")
+keywords_input = st.text_area(
+    "Enter keywords (one per line):",
+    placeholder="example:\nwildlife rescue\nanimal rescue\ndog rescue",
+    height=200
+)
+
+# Build keyword list (required)
+KEYWORDS = [k.strip() for k in keywords_input.splitlines() if k.strip()]
+KEYWORDS = list(dict.fromkeys(KEYWORDS))  # remove duplicates
 
 days = st.number_input(
     "Enter Days to Search (1–30):",
@@ -44,6 +38,11 @@ days = st.number_input(
 )
 
 if st.button("Fetch Data"):
+
+    if not KEYWORDS:
+        st.warning("Please enter at least one keyword to start.")
+        st.stop()
+
     start_date = (datetime.utcnow() - timedelta(days=int(days))).isoformat("T") + "Z"
     all_results = []
 
@@ -61,9 +60,11 @@ if st.button("Fetch Data"):
                 "key": API_KEY,
             }
 
-            search_res = requests.get(YOUTUBE_SEARCH_URL, params=search_params, timeout=15).json()
-            videos = search_res.get("items", [])
+            search_res = requests.get(
+                YOUTUBE_SEARCH_URL, params=search_params, timeout=15
+            ).json()
 
+            videos = search_res.get("items", [])
             if not videos:
                 continue
 
