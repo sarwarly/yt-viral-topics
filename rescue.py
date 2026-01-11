@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import math
 
 # =========================
 # CONFIG
@@ -11,13 +12,15 @@ YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 YOUTUBE_VIDEO_URL = "https://www.googleapis.com/youtube/v3/videos"
 YOUTUBE_CHANNEL_URL = "https://www.googleapis.com/youtube/v3/channels"
 
-MAX_RESULTS = 5
-MAX_SUBSCRIBERS = 3000
+MAX_RESULTS = 5               # per keyword
+MAX_SUBSCRIBERS = 20000       # breakout range
+MIN_VIRAL_RATIO = 10          # views / subs
+MAX_VIDEO_AGE_DAYS = 7        # freshness window
 
 # =========================
 # STREAMLIT UI
 # =========================
-st.title("🐾 YouTube Viral Topics – Animal Rescue")
+st.title("🐾 YouTube Viral Finder – Animal Rescue")
 
 st.subheader("🔑 Keywords")
 keywords_input = st.text_area(
@@ -26,30 +29,33 @@ keywords_input = st.text_area(
     height=200
 )
 
-# Build keyword list (required)
 KEYWORDS = [k.strip() for k in keywords_input.splitlines() if k.strip()]
-KEYWORDS = list(dict.fromkeys(KEYWORDS))  # remove duplicates
+KEYWORDS = list(dict.fromkeys(KEYWORDS))  # deduplicate
 
 days = st.number_input(
-    "Enter Days to Search (1–30):",
+    "Search videos published in last N days:",
     min_value=1,
     max_value=30,
     value=7
 )
 
-if st.button("Fetch Data"):
+if st.button("Find Viral Videos"):
 
     if not KEYWORDS:
-        st.warning("Please enter at least one keyword to start.")
+        st.warning("Please enter at least one keyword.")
         st.stop()
 
-    start_date = (datetime.utcnow() - timedelta(days=int(days))).isoformat("T") + "Z"
+    start_date = (
+        datetime.now(timezone.utc) - timedelta(days=int(days))
+    ).isoformat().replace("+00:00", "Z")
+
     all_results = []
 
     for keyword in KEYWORDS:
         st.write(f"🔍 Searching: **{keyword}**")
 
         try:
+            # -------- SEARCH --------
             search_params = {
                 "part": "snippet",
                 "q": keyword,
@@ -71,25 +77,41 @@ if st.button("Fetch Data"):
             video_ids = [v["id"]["videoId"] for v in videos]
             channel_ids = [v["snippet"]["channelId"] for v in videos]
 
+            # -------- VIDEO STATS --------
             video_stats = requests.get(
                 YOUTUBE_VIDEO_URL,
-                params={"part": "statistics", "id": ",".join(video_ids), "key": API_KEY},
+                params={
+                    "part": "statistics",
+                    "id": ",".join(video_ids),
+                    "key": API_KEY
+                },
                 timeout=15
             ).json()
 
+            # -------- CHANNEL STATS --------
             channel_stats = requests.get(
                 YOUTUBE_CHANNEL_URL,
-                params={"part": "statistics", "id": ",".join(channel_ids), "key": API_KEY},
+                params={
+                    "part": "statistics",
+                    "id": ",".join(channel_ids),
+                    "key": API_KEY
+                },
                 timeout=15
             ).json()
 
             video_stat_map = {
-                v["id"]: v["statistics"] for v in video_stats.get("items", [])
-            }
-            channel_stat_map = {
-                c["id"]: c["statistics"] for c in channel_stats.get("items", [])
+                v["id"]: v["statistics"]
+                for v in video_stats.get("items", [])
             }
 
+            channel_stat_map = {
+                c["id"]: c["statistics"]
+                for c in channel_stats.get("items", [])
+            }
+
+            now = datetime.now(timezone.utc)
+
+            # -------- ANALYSIS --------
             for v in videos:
                 vid = v["id"]["videoId"]
                 cid = v["snippet"]["channelId"]
@@ -97,14 +119,35 @@ if st.button("Fetch Data"):
                 views = int(video_stat_map.get(vid, {}).get("viewCount", 0))
                 subs = int(channel_stat_map.get(cid, {}).get("subscriberCount", 0))
 
-                if subs <= MAX_SUBSCRIBERS and views > 0:
+                if subs <= 0 or views <= 0:
+                    continue
+
+                published_at = datetime.fromisoformat(
+                    v["snippet"]["publishedAt"].replace("Z", "+00:00")
+                )
+                days_old = max((now - published_at).days, 1)
+
+                # Core viral metrics
+                views_to_subs = views / subs
+                views_per_day = views / days_old
+                viral_score = views_to_subs * math.log(views_per_day + 1)
+
+                # -------- FILTERING --------
+                if (
+                    subs <= MAX_SUBSCRIBERS
+                    and views_to_subs >= MIN_VIRAL_RATIO
+                    and days_old <= MAX_VIDEO_AGE_DAYS
+                ):
                     all_results.append({
                         "Keyword": keyword,
                         "Title": v["snippet"]["title"],
-                        "Description": v["snippet"]["description"][:200],
                         "URL": f"https://www.youtube.com/watch?v={vid}",
                         "Views": views,
-                        "Subscribers": subs
+                        "Subscribers": subs,
+                        "Days Old": days_old,
+                        "Views/Subs": round(views_to_subs, 2),
+                        "Views/Day": int(views_per_day),
+                        "Viral Score": round(viral_score, 2),
                     })
 
         except Exception as e:
@@ -114,21 +157,24 @@ if st.button("Fetch Data"):
     # OUTPUT
     # =========================
     if all_results:
-        all_results.sort(key=lambda x: x["Views"], reverse=True)
-        st.success(f"Found {len(all_results)} results!")
+        all_results.sort(key=lambda x: x["Viral Score"], reverse=True)
+
+        st.success(f"🔥 Found {len(all_results)} viral opportunities")
 
         for r in all_results:
             st.markdown(
                 f"""
-**🎬 Title:** {r['Title']}  
+**🎬 {r['Title']}**  
 **🔑 Keyword:** {r['Keyword']}  
 **👁 Views:** {r['Views']:,}  
 **👥 Subscribers:** {r['Subscribers']:,}  
+**⏱ Days Old:** {r['Days Old']}  
+**⚡ Views/Subs:** {r['Views/Subs']}  
+**🚀 Views/Day:** {r['Views/Day']:,}  
+**🔥 Viral Score:** {r['Viral Score']}  
 **🔗 URL:** [Watch Video]({r['URL']})  
-
-_{r['Description']}_  
 ---
 """
             )
     else:
-        st.warning("No suitable low-subscriber videos found.")
+        st.warning("No strong viral signals found. Try different keywords or fewer days.")
